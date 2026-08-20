@@ -1,0 +1,25 @@
+# Python Dependencies for PREDAP Pipeline
+
+# Core Data Processing
+pandas>=2.0.0
+pyodbc>=4.0.35
+numpy>=1.24.0
+openpyxl>=3.1.5
+
+# Database and SQL
+sqlalchemy>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+click>=8.1.0
+
+# Logging and Monitoring
+#logging-loki>=0.3.1
+
+# Development and Testing
+pytest>=7.3.0
+pytest-cov>=4.1.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+pyarrow>=15.0.0

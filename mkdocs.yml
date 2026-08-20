@@ -1,0 +1,26 @@
+site_name: data-retrieval
+site_description: Documentation for demand and diagnosis Parquet data retrieval pipelines.
+repo_url: https://github.com/<user>/data-retrieval
+repo_name: <user>/data-retrieval
+
+theme:
+  name: mkdocs
+  navigation_depth: 3
+
+nav:
+  - Home: index.md
+  - Analisi funcional: function-analysis.md
+  - Politica de dades: data-policy.md
+  - Git workflow: git-workflow.md
+  - Instal.lacio: installation.md
+  - Dades d'entrada: input-data.md
+  - Execucio: execution.md
+  - Sortides: outputs.md
+  - Seleccions i naming: selections-and-naming.md
+  - Llicencies: licensing.md
+  - Manteniment: maintenance.md
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true

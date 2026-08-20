@@ -1,0 +1,27 @@
+ICD10_3,feature_name,definition_ca
+J00-J06,G01,Infeccions respiratòries agudes i simptomatologia
+J09-J18,G01,Infeccions respiratòries agudes i simptomatologia
+J20-J22,G01,Infeccions respiratòries agudes i simptomatologia
+R05,G01,Infeccions respiratòries agudes i simptomatologia
+R50,G01,Infeccions respiratòries agudes i simptomatologia
+J40-J47,G02,"Asma, MPOC i malalties respiratòries cròniques / exacerbacions"
+A00-A09,G03,Gastroenteritis i infeccions digestives + símptomes
+K52,G03,Gastroenteritis i infeccions digestives + símptomes
+R11,G03,Gastroenteritis i infeccions digestives + símptomes
+R19,G03,Gastroenteritis i infeccions digestives + símptomes
+F30-F39,G04,"Salut mental: ansietat, depressió i trastorns adaptatius"
+F40-F4,G04,"Salut mental: ansietat, depressió i trastorns adaptatius"
+M00-M99,G05,"Dolor musculoesquelètic, lumbàlgia i lesions menors"
+S00-T88,G05,"Dolor musculoesquelètic, lumbàlgia i lesions menors"
+J00,D01,Infecció respiratòria aguda de vies altes
+J06,D01,Infecció respiratòria aguda de vies altes
+J09,D02,Síndrome gripal
+J10,D02,Síndrome gripal
+J11,D02,Síndrome gripal
+J21,D03,Bronquiolitis aguda
+A09,D04,Gastroenteritis infecciosa
+M54,D05,Lumbàlgia / dolor lumbar
+F41,D06,Ansietat / trastorn d’ansietat
+E11,D07,Diabetis tipus 2
+U07.1,D08,COVID-19
+I10,D09,Hipertensió essencial
