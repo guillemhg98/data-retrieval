@@ -22,6 +22,10 @@ El projecte esta organitzat en cinc blocs:
 | `run_demand_pipeline_optimized()` | Executa el pipeline real de demanda. |
 | `run_diagnosis_pipeline_optimized()` | Executa el pipeline real de diagnostics. |
 | `join_final_outputs()` | Uneix finals de demanda i diagnostics per `timestamp`. |
+<<<<<<< HEAD
+=======
+| `offline_impute_final_outputs()` | Imputa finals locals existents fins a `--end-date` sense connexio al servidor i refa el join. |
+>>>>>>> 47892ac (Initial project upload)
 | `run_demand_sample_pipeline()` | Executa demanda amb CSVs locals sintetiques. |
 | `run_diagnosis_sample_pipeline()` | Executa diagnostics amb CSVs locals sintetiques. |
 | `join_sample_final_outputs()` | Uneix els finals generats pel mode sample. |
@@ -74,7 +78,11 @@ python run_pipeline.py --all
 | `build_daily_features_global_optimized()` | Calcula variables globals per categories de visita. |
 | `build_daily_features_by_group_optimized()` | Calcula variables per RS o UP. |
 | `aggregate_final_optimized()` | Fusiona incrementals, substitueix solapaments i desa final. |
+<<<<<<< HEAD
 | `refresh_final_imputation()` | Refresca imputacions si no hi ha dades noves reals. |
+=======
+| `refresh_final_imputation()` | Refresca imputacions si no hi ha dades noves reals o si s'executa `--offline-impute`. |
+>>>>>>> 47892ac (Initial project upload)
 
 ## Diagnostics
 
@@ -110,8 +118,13 @@ python run_pipeline.py --all
 | `shared/db.py` | Construeix connexio ODBC, accepta `DB_CONNECTION_STRING`, retries i autenticacio Azure. |
 | `shared/utils.py` | Calcula finestres incrementals, rangs anuals, consultes SQL i estat legacy. |
 | `shared/parquet_storage.py` | Gestiona incrementals, finals, metadata i filtrat de dates futures. |
+<<<<<<< HEAD
 | `shared/imputation.py` | Completa dies pendents fins a data objectiu amb mitjana historica i marca files imputades. |
 | `shared/final_joiner.py` | Carrega finals, canonitza columnes i fa join columnwise per `timestamp`. |
+=======
+| `shared/imputation.py` | Completa dies pendents fins a data objectiu amb mitjana historica i marca files imputades; nomes permet futur quan el mode offline ho demana explicitament. |
+| `shared/final_joiner.py` | Carrega finals, canonitza columnes i fa join columnwise per `timestamp`; pot conservar futur imputat en mode offline. |
+>>>>>>> 47892ac (Initial project upload)
 | `shared/naming.py` | Defineix gramatica `DOMAIN__VARIABLE__CATEGORY__GEO__ID` i migracio de noms antics. |
 | `shared/logging_config.py` | Configura logging. |
 

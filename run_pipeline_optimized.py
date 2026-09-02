@@ -27,6 +27,10 @@ from pipelines.shared.imputation import (
     is_imputed_series,
     write_imputation_metadata_files,
 )
+<<<<<<< HEAD
+=======
+from pipelines.shared.parquet_storage import ParquetFinalStore
+>>>>>>> 47892ac (Initial project upload)
 
 logger = setup_logging()
 
@@ -619,6 +623,10 @@ def join_final_outputs(
     demand_file: Optional[Path] = None,
     diagnosis_file: Optional[Path] = None,
     output_file: Optional[Path] = None,
+<<<<<<< HEAD
+=======
+    allow_future: bool = False,
+>>>>>>> 47892ac (Initial project upload)
 ) -> bool:
     """Join final demand and diagnosis outputs columnwise."""
     logger.info("=" * 80)
@@ -647,6 +655,10 @@ def join_final_outputs(
             demand_final_file=demand_path,
             diagnosis_final_file=diagnosis_path,
             output_file=output_path,
+<<<<<<< HEAD
+=======
+            allow_future=allow_future,
+>>>>>>> 47892ac (Initial project upload)
         )
         joiner.join_and_save(
             demand_prefix="DEMAND",
@@ -662,6 +674,81 @@ def join_final_outputs(
         return False
 
 
+<<<<<<< HEAD
+=======
+def offline_impute_final_outputs(
+    end_date: pd.Timestamp,
+    run_demand: bool = True,
+    run_diagnosis: bool = True,
+    run_join: bool = True,
+) -> bool:
+    """Impute existing local final Parquet outputs through end_date without DB access."""
+    if end_date is None:
+        raise ValueError("--offline-impute requires --end-date")
+
+    logger.info("=" * 80)
+    logger.info("OFFLINE IMPUTATION FROM EXISTING FINAL PARQUET OUTPUTS")
+    logger.info("=" * 80)
+
+    demand_config = get_config("demand")
+    diagnosis_config = get_config("diagnosis")
+    target_day = pd.to_datetime(end_date).normalize()
+    results = []
+
+    if run_demand:
+        from pipelines.demand.aggregation_optimized import refresh_final_imputation
+
+        demand_file = demand_config.PIPELINE_DATA_DIR / "finals" / "demand_final.parquet"
+        demand_store = ParquetFinalStore(demand_file)
+        observed_until = demand_store.get_last_timestamp()
+        logger.info(
+            f"Offline demand imputation: observed_until={observed_until}, "
+            f"target_until={target_day.date()}"
+        )
+        df = refresh_final_imputation(
+            demand_store,
+            observed_until=observed_until,
+            impute_until=target_day,
+            allow_future_imputation=True,
+        )
+        results.append(("Demand Offline Imputation", not df.empty))
+
+    if run_diagnosis:
+        from pipelines.diagnosis.aggregation_optimized import (
+            refresh_diagnosis_final_imputation,
+        )
+
+        diagnosis_file = (
+            diagnosis_config.PIPELINE_DATA_DIR / "finals" / "diagnosis_final.parquet"
+        )
+        diagnosis_store = ParquetFinalStore(diagnosis_file)
+        observed_until = diagnosis_store.get_last_timestamp()
+        logger.info(
+            f"Offline diagnosis imputation: observed_until={observed_until}, "
+            f"target_until={target_day.date()}"
+        )
+        df = refresh_diagnosis_final_imputation(
+            diagnosis_store,
+            observed_until=observed_until,
+            impute_until=target_day,
+            allow_future_imputation=True,
+        )
+        results.append(("Diagnosis Offline Imputation", not df.empty))
+
+    if run_join:
+        results.append(("Final Join", join_final_outputs(allow_future=True)))
+
+    logger.info("=" * 80)
+    logger.info("OFFLINE IMPUTATION SUMMARY:")
+    for name, success in results:
+        status = "SUCCESS" if success else "FAILED"
+        logger.info(f"  {name}: {status}")
+    logger.info("=" * 80)
+
+    return all(success for _, success in results)
+
+
+>>>>>>> 47892ac (Initial project upload)
 def run_demand_sample_pipeline(
     input_dir: Path,
     output_dir: Path,
@@ -746,6 +833,10 @@ Examples:
   python run_pipeline.py --all                           Run both + final join
   python run_pipeline.py --all --start-date 2024-01-01 --end-date 2024-12-31
   python run_pipeline.py --sample --all                  Run sample data + final join
+<<<<<<< HEAD
+=======
+  python run_pipeline.py --offline-impute --end-date 2026-09-14
+>>>>>>> 47892ac (Initial project upload)
   python run_pipeline.py --join-final                    Join final outputs only
   python run_pipeline.py --convert-parquet data/finals/x.parquet --to csv
   python run_pipeline.py --show-parquet data/finals/x.parquet --start-date 2026-05-20 --end-date 2026-05-28
@@ -760,7 +851,12 @@ Features:
   - Optional explicit date ranges with --start-date and --end-date
   - Parquet conversion to CSV or Excel with --convert-parquet
   - Parquet row inspection, imputation checks, and date-range row deletion
+<<<<<<< HEAD
   - Future-dated rows are excluded from incremental and final outputs
+=======
+  - Future-dated rows are excluded from normal incremental and final outputs
+  - Offline imputation can explicitly extend existing final outputs past today
+>>>>>>> 47892ac (Initial project upload)
   - Timestamp columns for tracking
   - Columnwise joining of demand and diagnosis
   - Synthetic sample mode without database access
@@ -799,6 +895,17 @@ Features:
         help="Use local synthetic CSV data instead of querying the database",
     )
     parser.add_argument(
+<<<<<<< HEAD
+=======
+        "--offline-impute",
+        action="store_true",
+        help=(
+            "Without database access, impute existing final Parquet outputs "
+            "through --end-date and join them"
+        ),
+    )
+    parser.add_argument(
+>>>>>>> 47892ac (Initial project upload)
         "--sample-input-dir",
         type=Path,
         default=PROJECT_ROOT / "data" / "sample" / "input",
@@ -990,6 +1097,43 @@ Features:
             logger.error(f"Parquet row deletion failed: {e}", exc_info=True)
             return 1
 
+<<<<<<< HEAD
+=======
+    if args.offline_impute:
+        run_demand = not args.diagnosis and not args.join_final
+        run_diagnosis = not args.demand and not args.join_final
+        run_join = not args.demand and not args.diagnosis
+
+        if args.all or args.both:
+            run_demand = True
+            run_diagnosis = True
+            run_join = True
+        elif args.demand:
+            run_demand = True
+            run_diagnosis = False
+            run_join = False
+        elif args.diagnosis:
+            run_demand = False
+            run_diagnosis = True
+            run_join = False
+        elif args.join_final:
+            run_demand = False
+            run_diagnosis = False
+            run_join = True
+
+        try:
+            success = offline_impute_final_outputs(
+                end_date=end_date,
+                run_demand=run_demand,
+                run_diagnosis=run_diagnosis,
+                run_join=run_join,
+            )
+            return 0 if success else 1
+        except Exception as e:
+            logger.error(f"Offline imputation failed: {e}", exc_info=True)
+            return 1
+
+>>>>>>> 47892ac (Initial project upload)
     run_demand = False
     run_diagnosis = False
     run_join = False

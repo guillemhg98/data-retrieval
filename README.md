@@ -2,10 +2,18 @@
 
 Pipelines Python per recuperar dades de SQL Server / Azure Synapse, transformar-les i generar matrius diaries en Parquet per a demanda assistencial i diagnostics.
 
+<<<<<<< HEAD
 El repo esta preparat per funcionar en dos modes:
 
 - `sample`: executa tot el flux amb CSVs sintetiques incloses al repo, sense credencials ni ODBC.
 - `production`: consulta les taules reals, crea incrementals Parquet i reconstrueix finals.
+=======
+El repo esta preparat per funcionar en tres modes:
+
+- `sample`: executa tot el flux amb CSVs sintetiques incloses al repo, sense credencials ni ODBC.
+- `production`: consulta les taules reals, crea incrementals Parquet i reconstrueix finals.
+- `offline-impute`: sense connexio al servidor, allarga els finals Parquet locals fins a una data objectiu amb files imputades i marcades com a tals.
+>>>>>>> 47892ac (Initial project upload)
 
 ## Que genera
 
@@ -53,6 +61,27 @@ Copy-Item .env.example .env
 python run_pipeline.py --all
 ```
 
+<<<<<<< HEAD
+=======
+Per allargar els finals locals sense connexio al servidor, per exemple fins al `2026-09-14`:
+
+```powershell
+cd C:\Users\Guillem\Desktop\data-retrieval
+.\.venv\Scripts\activate
+python run_pipeline.py --offline-impute --end-date 2026-09-14
+```
+
+Aquest mode no recupera dades reals: carrega `demand_final.parquet` i `diagnosis_final.parquet`, afegeix les dates que falten fins a `--end-date` amb imputacio, i reconstrueix `data/finals/demand_diagnosis_joined.parquet`. Les files imputades queden marcades amb `__is_imputed=True`, `__imputation_method`, `__imputation_source_last_date` i `__imputation_created_at`.
+
+Quan es torni a executar el pipeline normal amb connexio:
+
+```powershell
+python run_pipeline.py --all --end-date 2026-09-14
+```
+
+les files imputades no compten com a reals ni com a estat definitiu: el pipeline repren des de l'ultim dia real, descarta les imputacions en fusionar, i substitueix els dies solapats pels valors reals de la base de dades.
+
+>>>>>>> 47892ac (Initial project upload)
 Flux Git, push/pull i validacions completes:
 
 ```powershell

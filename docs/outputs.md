@@ -43,6 +43,24 @@ Cada final tambe escriu sidecars:
 
 Quan la base de dades publica dades reals mes tard, les files imputades no compten com a processades i son substituides pels valors reals.
 
+<<<<<<< HEAD
 ## Regla de dates futures
 
 Les consultes i l'escriptura Parquet exclouen timestamps posteriors a avui. Si la font conte dates corruptes o futures, es descarten abans de guardar.
+=======
+El mode `--offline-impute` aplica la mateixa semantica sense connexio al servidor: fa servir els Parquet finals locals com a base, conserva les files reals, elimina imputacions anteriors i torna a crear la cua imputada fins a `--end-date`.
+
+Exemple:
+
+```bash
+python run_pipeline.py --offline-impute --end-date 2026-09-14
+```
+
+La sortida fins al `2026-09-14` queda marcada com a imputada. Quan posteriorment s'executa `python run_pipeline.py --all --end-date 2026-09-14` amb connexio a Synapse, els dies imputats es recalculen amb dades reals i reemplacen les estimacions.
+
+## Regla de dates futures
+
+En execucio normal, les consultes i l'escriptura Parquet exclouen timestamps posteriors a avui. Si la font conte dates corruptes o futures, es descarten abans de guardar.
+
+L'unica excepcio es `--offline-impute`: quan l'usuari dona explicitament `--end-date` posterior a avui, el mode offline pot escriure files futures, pero sempre com a imputades i amb les columnes de control anteriors.
+>>>>>>> 47892ac (Initial project upload)
