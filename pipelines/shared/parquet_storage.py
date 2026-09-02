@@ -18,16 +18,10 @@ logger = logging.getLogger(__name__)
 def drop_future_timestamp_rows(
     df: pd.DataFrame,
     timestamp_col: str = "timestamp",
-<<<<<<< HEAD
-) -> pd.DataFrame:
-    """Drop rows dated after today, using tomorrow as the exclusive cutoff."""
-    if df.empty or timestamp_col not in df.columns:
-=======
     allow_future: bool = False,
 ) -> pd.DataFrame:
     """Drop rows dated after today, using tomorrow as the exclusive cutoff."""
     if allow_future or df.empty or timestamp_col not in df.columns:
->>>>>>> 47892ac (Initial project upload)
         return df
 
     out = df.copy()
@@ -250,10 +244,7 @@ class ParquetFinalStore:
         df: pd.DataFrame,
         index_col: str = "timestamp",
         compression: str = "snappy",
-<<<<<<< HEAD
-=======
         allow_future: bool = False,
->>>>>>> 47892ac (Initial project upload)
     ) -> None:
         """
         Save final aggregated data as optimized columnwise Parquet.
@@ -274,11 +265,7 @@ class ParquetFinalStore:
         elif df.index.name is not None:
             df = df.reset_index()
 
-<<<<<<< HEAD
-        df = drop_future_timestamp_rows(df, index_col)
-=======
         df = drop_future_timestamp_rows(df, index_col, allow_future=allow_future)
->>>>>>> 47892ac (Initial project upload)
         if df.empty:
             logger.warning("No final rows on or before today - skipping save")
             return

@@ -60,10 +60,7 @@ def impute_tail_to_date(
     observed_until: Optional[pd.Timestamp],
     target_until: Optional[pd.Timestamp] = None,
     timestamp_col: str = "timestamp",
-<<<<<<< HEAD
-=======
     allow_future: bool = False,
->>>>>>> 47892ac (Initial project upload)
 ) -> pd.DataFrame:
     """
     Complete a final daily dataframe through target_until with tracked estimates.
@@ -81,14 +78,9 @@ def impute_tail_to_date(
         if target_until is None
         else pd.to_datetime(target_until).normalize()
     )
-<<<<<<< HEAD
-    today = pd.Timestamp.today().normalize()
-    target_day = min(target_day, today)
-=======
     if not allow_future:
         today = pd.Timestamp.today().normalize()
         target_day = min(target_day, today)
->>>>>>> 47892ac (Initial project upload)
 
     real = drop_imputed_rows(df, timestamp_col=timestamp_col)
     if real.empty:

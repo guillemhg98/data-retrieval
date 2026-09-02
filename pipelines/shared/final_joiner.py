@@ -23,10 +23,7 @@ class FinalDataJoiner:
         diagnosis_final_file: str | Path,
         output_file: str | Path,
         timestamp_col: str = "timestamp",
-<<<<<<< HEAD
-=======
         allow_future: bool = False,
->>>>>>> 47892ac (Initial project upload)
     ):
         """
         Initialize final data joiner.
@@ -41,10 +38,7 @@ class FinalDataJoiner:
         self.diagnosis_file = Path(diagnosis_final_file)
         self.output_file = Path(output_file)
         self.timestamp_col = timestamp_col
-<<<<<<< HEAD
-=======
         self.allow_future = allow_future
->>>>>>> 47892ac (Initial project upload)
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
 
     def join_columnwise(
@@ -143,15 +137,11 @@ class FinalDataJoiner:
         # Fill any remaining nulls with 0 for numeric columns
         numeric_cols = merged.select_dtypes(include=[float, int]).columns
         merged[numeric_cols] = merged[numeric_cols].fillna(0)
-<<<<<<< HEAD
-        merged = drop_future_timestamp_rows(merged, self.timestamp_col)
-=======
         merged = drop_future_timestamp_rows(
             merged,
             self.timestamp_col,
             allow_future=self.allow_future,
         )
->>>>>>> 47892ac (Initial project upload)
 
         logger.info(
             f"Joined output: {len(merged)} rows, {len(merged.columns)} columns"

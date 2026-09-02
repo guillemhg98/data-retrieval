@@ -278,10 +278,7 @@ def aggregate_final_optimized(
     clear_incremental: bool = True,
     observed_until: Optional[pd.Timestamp] = None,
     impute_until: Optional[pd.Timestamp] = None,
-<<<<<<< HEAD
-=======
     allow_future_imputation: bool = False,
->>>>>>> 47892ac (Initial project upload)
 ) -> pd.DataFrame:
     """
     Efficiently aggregate incremental data to final output.
@@ -335,12 +332,6 @@ def aggregate_final_optimized(
             observed_until=observed_until,
             target_until=impute_until,
             timestamp_col=timestamp_col,
-<<<<<<< HEAD
-        )
-
-    # Save final
-    final_store.save_final(df, index_col=timestamp_col)
-=======
             allow_future=allow_future_imputation,
         )
 
@@ -350,7 +341,6 @@ def aggregate_final_optimized(
         index_col=timestamp_col,
         allow_future=allow_future_imputation,
     )
->>>>>>> 47892ac (Initial project upload)
 
     if clear_incremental:
         incremental_manager.clear_incremental_files()
@@ -363,10 +353,7 @@ def refresh_final_imputation(
     observed_until: Optional[pd.Timestamp],
     impute_until: Optional[pd.Timestamp],
     timestamp_col: str = "timestamp",
-<<<<<<< HEAD
-=======
     allow_future_imputation: bool = False,
->>>>>>> 47892ac (Initial project upload)
 ) -> pd.DataFrame:
     """Refresh tail imputations when there are no new source rows to aggregate."""
     existing_df = final_store.load_final()
@@ -378,10 +365,6 @@ def refresh_final_imputation(
         observed_until=observed_until,
         target_until=impute_until,
         timestamp_col=timestamp_col,
-<<<<<<< HEAD
-    )
-    final_store.save_final(df, index_col=timestamp_col)
-=======
         allow_future=allow_future_imputation,
     )
     final_store.save_final(
@@ -389,7 +372,6 @@ def refresh_final_imputation(
         index_col=timestamp_col,
         allow_future=allow_future_imputation,
     )
->>>>>>> 47892ac (Initial project upload)
     return df
 
 
