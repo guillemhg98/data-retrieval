@@ -10,6 +10,7 @@ from .utils import (
     get_incremental_processing_window,
     get_min_max_date,
     get_year_ranges,
+    get_half_year_ranges,
     get_data_for_year,
 )
 from .logging_config import setup_logging
@@ -46,6 +47,7 @@ __all__ = [
     "get_incremental_processing_window",
     "get_min_max_date",
     "get_year_ranges",
+    "get_half_year_ranges",
     "get_data_for_year",
     "setup_logging",
     "ParquetIncrementalManager",

@@ -22,6 +22,8 @@ UP_RS_ROWS = [
     {"Codi UP": "08368", "RS": "TERRES DE L'EBRE"},
     {"Codi UP": "04991", "RS": "LLEIDA"},
     {"Codi UP": "06311", "RS": "BARCELONA CIUTAT"},
+    {"Codi UP": "00370", "RS": "CATALUNYA CENTRAL"},
+    {"Codi UP": "03311", "RS": "CATALUNYA CENTRAL"},
 ]
 
 DEMAND_LOCATIONS = ["C", "D", "H"]

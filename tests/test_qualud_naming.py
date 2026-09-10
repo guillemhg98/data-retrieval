@@ -4,6 +4,8 @@ from pipelines.demand.aggregation_optimized import (
     build_daily_features_by_group_optimized,
     build_daily_features_global_optimized,
     build_daily_total_cat_optimized,
+    _merge_with_existing_final,
+    _drop_unselected_geo_columns as _drop_unselected_demand_geo_columns,
 )
 from pipelines.diagnosis.aggregation_optimized import (
     build_daily_diagnosis_by_group_optimized,
@@ -11,6 +13,7 @@ from pipelines.diagnosis.aggregation_optimized import (
     build_daily_total_general_optimized,
     build_diagnosis_wide_format_optimized,
     _build_diagnosis_wide_final,
+    _drop_unselected_geo_columns as _drop_unselected_diagnosis_geo_columns,
 )
 from pipelines.diagnosis.incremental_optimized import (
     _expand_diagnosis_code_spec,
@@ -24,6 +27,7 @@ from pipelines.demand.incremental_optimized import (
 )
 from pipelines.shared.final_joiner import FinalDataJoiner
 from pipelines.sample_runner import run_sample_diagnosis_pipeline
+from pipelines.shared.imputation import impute_tail_to_date
 
 
 def test_demand_columns_follow_qualud_ideal_naming():
@@ -171,6 +175,87 @@ def test_geo_selection_maps_source_values_to_configured_subset_ids():
     assert demand_up["UP"].tolist() == ["MICRO_01"]
     assert diagnosis_rs["RS"].tolist() == ["RS_64"]
     assert diagnosis_up["UP"].tolist() == ["MICRO_01"]
+
+
+def test_unselected_geo_columns_are_pruned_from_finals():
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2026-01-01"]),
+            "DEMAND__TOTAL": [10],
+            "DEMAND__TOTAL__UP__MICRO_01": [3],
+            "DEMAND__TOTAL__UP__MICRO_02": [4],
+            "DIAGNOSIS__TOTAL__RS__RS_67": [2],
+            "DIAGNOSIS__TOTAL__RS__RS_68": [5],
+        }
+    )
+
+    demand = _drop_unselected_demand_geo_columns(df, {"UP": {"MICRO_01"}})
+    diagnosis = _drop_unselected_diagnosis_geo_columns(df, {"RS": {"RS_67"}})
+
+    assert "DEMAND__TOTAL__UP__MICRO_01" in demand.columns
+    assert "DEMAND__TOTAL__UP__MICRO_02" not in demand.columns
+    assert "DIAGNOSIS__TOTAL__RS__RS_67" in diagnosis.columns
+    assert "DIAGNOSIS__TOTAL__RS__RS_68" not in diagnosis.columns
+
+
+def test_partial_selection_refresh_preserves_existing_columns_for_same_day():
+    class Store:
+        def load_final(self):
+            return pd.DataFrame(
+                {
+                    "timestamp": pd.to_datetime(["2026-01-01"]),
+                    "DEMAND__TOTAL": [10],
+                    "DEMAND__TOTAL__UP__MICRO_01": [3],
+                }
+            )
+
+    new_df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2026-01-01"]),
+            "DEMAND__TOTAL__UP__MICRO_02": [4],
+        }
+    )
+
+    merged = _merge_with_existing_final(
+        new_df,
+        Store(),
+        replace_overlapping_days=False,
+    )
+
+    assert merged.loc[0, "DEMAND__TOTAL"] == 10
+    assert merged.loc[0, "DEMAND__TOTAL__UP__MICRO_01"] == 3
+    assert merged.loc[0, "DEMAND__TOTAL__UP__MICRO_02"] == 4
+
+
+def test_new_real_rows_replace_existing_imputed_rows():
+    class Store:
+        def load_final(self):
+            observed = pd.DataFrame(
+                {
+                    "timestamp": pd.to_datetime(["2026-01-01"]),
+                    "DEMAND__TOTAL": [10],
+                }
+            )
+            return impute_tail_to_date(
+                observed,
+                observed_until=pd.Timestamp("2026-01-01"),
+                target_until=pd.Timestamp("2026-01-02"),
+            )
+
+    new_df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2026-01-02"]),
+            "DEMAND__TOTAL": [25],
+        }
+    )
+
+    merged = _merge_with_existing_final(new_df, Store())
+
+    assert merged["timestamp"].tolist() == [
+        pd.Timestamp("2026-01-01"),
+        pd.Timestamp("2026-01-02"),
+    ]
+    assert merged.loc[merged["timestamp"] == pd.Timestamp("2026-01-02"), "DEMAND__TOTAL"].iloc[0] == 25
 
 
 def test_sample_diagnosis_pipeline_uses_configured_groups_and_geo_ids(tmp_path):

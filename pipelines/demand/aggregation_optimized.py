@@ -279,6 +279,8 @@ def aggregate_final_optimized(
     observed_until: Optional[pd.Timestamp] = None,
     impute_until: Optional[pd.Timestamp] = None,
     allow_future_imputation: bool = False,
+    expected_geo_aliases: Optional[dict[str, set[str]]] = None,
+    partial_column_update: bool = False,
 ) -> pd.DataFrame:
     """
     Efficiently aggregate incremental data to final output.
@@ -324,7 +326,13 @@ def aggregate_final_optimized(
         return pd.DataFrame()
 
     df = _combine_wide_parts(parts, timestamp_col)
-    df = _merge_with_existing_final(df, final_store, timestamp_col)
+    df = _merge_with_existing_final(
+        df,
+        final_store,
+        timestamp_col,
+        replace_overlapping_days=not partial_column_update,
+    )
+    df = _drop_unselected_geo_columns(df, expected_geo_aliases)
 
     if impute_until is not None:
         df = impute_tail_to_date(
@@ -354,12 +362,14 @@ def refresh_final_imputation(
     impute_until: Optional[pd.Timestamp],
     timestamp_col: str = "timestamp",
     allow_future_imputation: bool = False,
+    expected_geo_aliases: Optional[dict[str, set[str]]] = None,
 ) -> pd.DataFrame:
     """Refresh tail imputations when there are no new source rows to aggregate."""
     existing_df = final_store.load_final()
     if existing_df.empty or impute_until is None:
         return existing_df
 
+    existing_df = _drop_unselected_geo_columns(existing_df, expected_geo_aliases)
     df = impute_tail_to_date(
         existing_df,
         observed_until=observed_until,
@@ -431,6 +441,7 @@ def _merge_with_existing_final(
     new_df: pd.DataFrame,
     final_store,
     timestamp_col: str = "timestamp",
+    replace_overlapping_days: bool = True,
 ) -> pd.DataFrame:
     """Merge new final rows with the existing final parquet, if present."""
     existing_df = final_store.load_final()
@@ -446,11 +457,48 @@ def _merge_with_existing_final(
     existing_idx = existing_df.set_index(timestamp_col)
     new_idx = new_df.set_index(timestamp_col)
 
-    # Replace complete overlapping days with the new aggregate. This avoids
-    # double-counting and prevents stale values from surviving in columns that
-    # are absent from a recomputed day.
-    existing_idx = existing_idx[~existing_idx.index.isin(new_idx.index)]
-    combined = pd.concat([existing_idx, new_idx], axis=0, sort=False)
+    if replace_overlapping_days:
+        # Replace complete overlapping days with the new aggregate. This avoids
+        # double-counting and prevents stale values from surviving in columns
+        # that are absent from a recomputed day.
+        existing_idx = existing_idx[~existing_idx.index.isin(new_idx.index)]
+        combined = pd.concat([existing_idx, new_idx], axis=0, sort=False)
+    else:
+        # Selection refreshes are partial-column updates: preserve existing
+        # columns for the same day and overwrite only the columns recalculated.
+        combined = new_idx.combine_first(existing_idx)
+
     combined = combined.sort_index().fillna(0)
     combined.index.name = timestamp_col
     return combined.reset_index()
+
+
+def _drop_unselected_geo_columns(
+    df: pd.DataFrame,
+    expected_geo_aliases: Optional[dict[str, set[str]]],
+) -> pd.DataFrame:
+    """Drop RS/UP columns whose geo aliases are no longer selected."""
+    if df.empty or not expected_geo_aliases:
+        return df
+
+    drop_cols = []
+    for col in df.columns:
+        parts = str(col).split("__")
+        for geo_level in (GEO_RS, GEO_UP):
+            if geo_level not in expected_geo_aliases or geo_level not in parts:
+                continue
+            geo_index = parts.index(geo_level) + 1
+            if geo_index >= len(parts):
+                continue
+            if parts[geo_index] not in expected_geo_aliases[geo_level]:
+                drop_cols.append(col)
+            break
+
+    if drop_cols:
+        logger.info(
+            "Dropping %d demand columns no longer present in selections",
+            len(drop_cols),
+        )
+        return df.drop(columns=drop_cols)
+
+    return df

@@ -245,6 +245,31 @@ def get_year_ranges(
     return ranges
 
 
+def get_half_year_ranges(
+    range_start: pd.Timestamp,
+    range_end: pd.Timestamp,
+) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """Split a date range into January-June and July-December chunks."""
+    start = pd.to_datetime(range_start)
+    end = pd.to_datetime(range_end)
+    if end <= start:
+        return []
+
+    ranges = []
+    for year in range(start.year, (end - pd.Timedelta(microseconds=1)).year + 1):
+        first_start = max(start, pd.Timestamp(f"{year}-01-01 00:00:00"))
+        first_end = min(end, pd.Timestamp(f"{year}-07-01 00:00:00"))
+        if first_end > first_start:
+            ranges.append((f"{year}H1", first_start, first_end))
+
+        second_start = max(start, pd.Timestamp(f"{year}-07-01 00:00:00"))
+        second_end = min(end, pd.Timestamp(f"{year + 1}-01-01 00:00:00"))
+        if second_end > second_start:
+            ranges.append((f"{year}H2", second_start, second_end))
+
+    return ranges
+
+
 def get_data_for_year(
     conn: pyodbc.Connection,
     schema: str,
@@ -254,9 +279,21 @@ def get_data_for_year(
     year_end: pd.Timestamp,
     last_loaded_date: Optional[pd.Timestamp] = None,
     selected_cols: Optional[list[str]] = None,
+    where_in: Optional[dict[str, list[str]]] = None,
 ) -> pd.DataFrame:
     """Query data for a specific year, optionally filtering by last loaded date."""
     cols_sql = ", ".join(f"[{c}]" for c in selected_cols)
+    params = [year_start, year_end]
+    extra_filters = []
+    if where_in:
+        for column, values in where_in.items():
+            clean_values = [str(value) for value in values if pd.notna(value)]
+            if not clean_values:
+                continue
+            placeholders = ", ".join(["?"] * len(clean_values))
+            extra_filters.append(f"AND RIGHT('00000' + LTRIM(RTRIM(CAST([{column}] AS VARCHAR(20)))), 5) IN ({placeholders})")
+            params.extend(clean_values)
+    extra_where = "\n            ".join(extra_filters)
 
     if last_loaded_date is None:
         query = f"""
@@ -264,18 +301,19 @@ def get_data_for_year(
         FROM [{schema}].[{table_name}]
         WHERE [{date_column}] >= ?
             AND [{date_column}] < ?
+            {extra_where}
         ORDER BY [{date_column}] ASC
         """
-        params = [year_start, year_end]
     else:
         query = f"""
         SELECT {cols_sql}
         FROM [{schema}].[{table_name}]
         WHERE [{date_column}] >= ?
             AND [{date_column}] < ?
+            {extra_where}
             AND [{date_column}] > ?
         ORDER BY [{date_column}] ASC
         """
-        params = [year_start, year_end, last_loaded_date]
+        params.append(last_loaded_date)
 
     return pd.read_sql_query(query, conn, params=params)

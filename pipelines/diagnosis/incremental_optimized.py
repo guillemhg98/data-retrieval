@@ -10,6 +10,7 @@ from pipelines.shared import (
     setup_logging,
     get_min_max_date,
     get_year_ranges,
+    get_half_year_ranges,
     get_incremental_processing_window,
 )
 from pipelines.shared.parquet_storage import ParquetIncrementalManager, ParquetFinalStore
@@ -59,14 +60,25 @@ def get_diagnosis_data_for_year_optimized(
     year_start: pd.Timestamp,
     year_end: pd.Timestamp,
     last_loaded_date: Optional[pd.Timestamp] = None,
+    up_filter: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """Query diagnosis data already aggregated by day, UP, and code prefix."""
     date_expr = f"CAST([{date_column}] AS date)"
     code_expr = (
         f"UPPER(LEFT(LTRIM(RTRIM(CAST([{diag_code_column}] AS VARCHAR(50)))), 3))"
     )
+    up_filter_sql = ""
+    up_filter_params = []
+    if up_filter:
+        placeholders = ", ".join(["?"] * len(up_filter))
+        up_filter_sql = (
+            "AND RIGHT('00000' + LTRIM(RTRIM(CAST("
+            f"[{up_column}] AS VARCHAR(20)))), 5) IN ({placeholders})"
+        )
+        up_filter_params = list(up_filter)
 
     if last_loaded_date is None:
+        params = [year_start, year_end, *up_filter_params]
         query = f"""
         SELECT
             {date_expr} AS [timestamp],
@@ -77,11 +89,12 @@ def get_diagnosis_data_for_year_optimized(
         WHERE [{date_column}] >= ?
             AND [{date_column}] < ?
             AND [{diag_code_column}] IS NOT NULL
+            {up_filter_sql}
         GROUP BY {date_expr}, [{up_column}], {code_expr}
         ORDER BY [timestamp] ASC
         """
-        params = [year_start, year_end]
     else:
+        params = [year_start, year_end, last_loaded_date, *up_filter_params]
         query = f"""
         SELECT
             {date_expr} AS [timestamp],
@@ -93,10 +106,10 @@ def get_diagnosis_data_for_year_optimized(
             AND [{date_column}] < ?
             AND [{date_column}] > ?
             AND [{diag_code_column}] IS NOT NULL
+            {up_filter_sql}
         GROUP BY {date_expr}, [{up_column}], {code_expr}
         ORDER BY [timestamp] ASC
         """
-        params = [year_start, year_end, last_loaded_date]
 
     return pd.read_sql_query(query, conn, params=params)
 
@@ -459,6 +472,267 @@ def _filter_if_selected(
     return out
 
 
+def _expected_geo_aliases(
+    selected_rs: Optional[dict[str, str]],
+    selected_up: Optional[dict[str, str]],
+) -> dict[str, set[str]]:
+    expected = {}
+    if selected_rs is not None:
+        expected["RS"] = set(selected_rs.values())
+    if selected_up is not None:
+        expected["UP"] = set(selected_up.values())
+    return expected
+
+
+def _missing_geo_sources(
+    final_store: ParquetFinalStore,
+    selected_rs: Optional[dict[str, str]],
+    selected_up: Optional[dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    existing = final_store.load_final()
+    if existing.empty:
+        return {}
+
+    existing_cols = {str(col) for col in existing.columns}
+    missing: dict[str, dict[str, str]] = {}
+    for geo_level, selected in (("RS", selected_rs), ("UP", selected_up)):
+        if not selected:
+            continue
+
+        missing_level = {
+            source: alias
+            for source, alias in selected.items()
+            if not any(f"__{geo_level}__{alias}" in col for col in existing_cols)
+        }
+        if missing_level:
+            missing[geo_level] = missing_level
+
+    return missing
+
+
+def _up_filter_for_missing_geos(
+    missing_geos: dict[str, dict[str, str]],
+    up_rs: pd.DataFrame,
+) -> Optional[list[str]]:
+    values = set(missing_geos.get("UP", {}).keys())
+    missing_rs = set(missing_geos.get("RS", {}).keys())
+    if missing_rs:
+        up_rs_map = up_rs[["Codi UP", "RS"]].copy()
+        up_rs_map["Codi UP"] = _normalize_up_codes(up_rs_map["Codi UP"])
+        up_rs_map["RS"] = _normalize_rs_values(up_rs_map["RS"])
+        values.update(up_rs_map.loc[up_rs_map["RS"].isin(missing_rs), "Codi UP"])
+
+    return sorted(values) if values else None
+
+
+def _process_diagnosis_range(
+    conn,
+    schema: str,
+    table_name: str,
+    date_column: str,
+    up_column: str,
+    diag_code_column: str,
+    range_label: str,
+    range_start: pd.Timestamp,
+    range_end: pd.Timestamp,
+    end_exclusive: pd.Timestamp,
+    up_rs: pd.DataFrame,
+    incremental_mgr: ParquetIncrementalManager,
+    selected_codes: Optional[dict[str, list[str]]],
+    selected_rs: Optional[dict[str, str]],
+    selected_up: Optional[dict[str, str]],
+    missing_geos: Optional[dict[str, dict[str, str]]] = None,
+) -> Optional[pd.Timestamp]:
+    up_filter = _up_filter_for_missing_geos(missing_geos, up_rs) if missing_geos else None
+    df_chunk = get_diagnosis_data_for_year_optimized(
+        conn=conn,
+        schema=schema,
+        table_name=table_name,
+        date_column=date_column,
+        up_column=up_column,
+        diag_code_column=diag_code_column,
+        year_start=range_start,
+        year_end=range_end,
+        last_loaded_date=None,
+        up_filter=up_filter,
+    )
+
+    if df_chunk.empty:
+        logger.info(f"No diagnosis data for {range_label}")
+        return None
+
+    logger.info(f"Diagnosis {range_label}: {len(df_chunk)} rows")
+    df_chunk["DIAG_CODE"] = _normalize_diag_codes(df_chunk["DIAG_CODE"])
+    df_chunk = df_chunk.dropna(subset=["DIAG_CODE"])
+    df_chunk = df_chunk[df_chunk["DIAG_CODE"] != ""]
+    if df_chunk.empty:
+        return None
+
+    df_chunk["timestamp"] = pd.to_datetime(df_chunk["timestamp"]).dt.floor("D")
+    df_chunk = df_chunk.dropna(subset=["timestamp"])
+    df_chunk = df_chunk[df_chunk["timestamp"] < end_exclusive].copy()
+    if df_chunk.empty:
+        logger.info(f"No diagnosis rows on or before today for {range_label}")
+        return None
+
+    df_chunk[up_column] = _normalize_up_codes(df_chunk[up_column])
+    df_chunk["n"] = pd.to_numeric(df_chunk["n"], errors="coerce").fillna(0)
+
+    up_rs_map = up_rs[["Codi UP", "RS"]].copy()
+    up_rs_map["Codi UP"] = _normalize_up_codes(up_rs_map["Codi UP"])
+    up_rs_map["RS"] = _normalize_rs_values(up_rs_map["RS"])
+    up_rs_map.columns = [up_column, "RS"]
+    before_merge = len(df_chunk)
+    df_chunk = df_chunk.merge(up_rs_map, on=up_column, how="left").fillna("UNKNOWN")
+    unknown_count = (df_chunk["RS"] == "UNKNOWN").sum()
+    if unknown_count > 0:
+        logger.warning(
+            f"Found {unknown_count} rows with unknown UP codes "
+            f"(out of {before_merge} total)"
+        )
+        unknown_ups = df_chunk[df_chunk["RS"] == "UNKNOWN"][up_column].unique()
+        logger.warning(f"Unknown UP codes: {list(unknown_ups)[:10]}...")
+
+    pieces = []
+    if not missing_geos:
+        pieces.append(build_daily_total_general_optimized(df_chunk).reset_index())
+
+    rs_selection = (
+        missing_geos.get("RS")
+        if missing_geos and "RS" in missing_geos
+        else selected_rs
+    )
+    up_selection = (
+        missing_geos.get("UP")
+        if missing_geos and "UP" in missing_geos
+        else selected_up
+    )
+    if not missing_geos or "RS" in missing_geos:
+        pieces.append(
+            build_daily_total_by_group_optimized(
+                _filter_if_selected(df_chunk, "RS", rs_selection),
+                group_col="RS",
+                group_label="RS",
+            )
+        )
+    if not missing_geos or "UP" in missing_geos:
+        pieces.append(
+            build_daily_total_by_group_optimized(
+                _filter_if_selected(df_chunk, up_column, up_selection),
+                group_col=up_column,
+                group_label="UP",
+            )
+        )
+
+    if selected_codes:
+        code_df = _expand_selected_code_aliases(df_chunk, selected_codes)
+        logger.info(
+            f"Selected diagnosis-code rows for {range_label}: "
+            f"{len(code_df)} output rows from {len(df_chunk)} aggregated rows "
+            f"across {code_df['DIAG_CODE'].nunique()} output groups"
+        )
+    else:
+        code_df = df_chunk.iloc[0:0].copy()
+        logger.warning(
+            "Skipping code-specific diagnosis features because no selected "
+            "diagnosis-code file was found"
+        )
+
+    if not missing_geos:
+        pieces.append(build_daily_diagnosis_counts_optimized(code_df))
+    if not missing_geos or "RS" in missing_geos:
+        pieces.append(
+            build_daily_diagnosis_by_group_optimized(
+                _filter_if_selected(code_df, "RS", rs_selection),
+                group_col="RS",
+            )
+        )
+    if not missing_geos or "UP" in missing_geos:
+        pieces.append(
+            build_daily_diagnosis_by_group_optimized(
+                _filter_if_selected(code_df, up_column, up_selection),
+                group_col=up_column,
+            )
+        )
+
+    yearly_daily = _build_diagnosis_wide_final(
+        pd.concat(pieces, ignore_index=True, sort=False)
+    )
+    incremental_mgr.add_data(yearly_daily, timestamp_col="timestamp")
+    logger.info(
+        f"Saved diagnosis {range_label} daily aggregate ({len(yearly_daily)} rows)"
+    )
+    return df_chunk["timestamp"].max()
+
+
+def _process_diagnosis_range_with_fallback(
+    conn,
+    schema: str,
+    table_name: str,
+    date_column: str,
+    up_column: str,
+    diag_code_column: str,
+    range_label: str,
+    range_start: pd.Timestamp,
+    range_end: pd.Timestamp,
+    end_exclusive: pd.Timestamp,
+    up_rs: pd.DataFrame,
+    incremental_mgr: ParquetIncrementalManager,
+    selected_codes: Optional[dict[str, list[str]]],
+    selected_rs: Optional[dict[str, str]],
+    selected_up: Optional[dict[str, str]],
+    missing_geos: Optional[dict[str, dict[str, str]]] = None,
+) -> Optional[pd.Timestamp]:
+    try:
+        return _process_diagnosis_range(
+            conn,
+            schema,
+            table_name,
+            date_column,
+            up_column,
+            diag_code_column,
+            range_label,
+            range_start,
+            range_end,
+            end_exclusive,
+            up_rs,
+            incremental_mgr,
+            selected_codes,
+            selected_rs,
+            selected_up,
+            missing_geos,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"Diagnosis {range_label} failed; retrying in 6-month chunks: {exc}",
+            exc_info=True,
+        )
+
+    max_loaded = None
+    for half_label, half_start, half_end in get_half_year_ranges(range_start, range_end):
+        chunk_max = _process_diagnosis_range(
+            conn,
+            schema,
+            table_name,
+            date_column,
+            up_column,
+            diag_code_column,
+            half_label,
+            half_start,
+            half_end,
+            end_exclusive,
+            up_rs,
+            incremental_mgr,
+            selected_codes,
+            selected_rs,
+            selected_up,
+            missing_geos,
+        )
+        if pd.notna(chunk_max) and (max_loaded is None or chunk_max > max_loaded):
+            max_loaded = chunk_max
+    return max_loaded
+
+
 def run_incremental_diagnosis_pipeline_optimized(
     db_server: str,
     db_database: str,
@@ -565,177 +839,110 @@ def run_incremental_diagnosis_pipeline_optimized(
             else min(pd.to_datetime(end_date).normalize(), today_day)
         )
         source_observed_until = min(pd.to_datetime(max_date).normalize(), requested_end_day)
+        expected_aliases = _expected_geo_aliases(selected_rs, selected_up)
+        missing_geos = _missing_geo_sources(final_store, selected_rs, selected_up)
+        has_selection_refresh = bool(missing_geos)
+        if has_selection_refresh:
+            logger.info(
+                "Detected diagnosis selection columns to backfill: %s",
+                {
+                    geo_level: sorted(values.values())
+                    for geo_level, values in missing_geos.items()
+                },
+            )
 
-        window = get_incremental_processing_window(
+        normal_window = get_incremental_processing_window(
             min_date=min_date,
             max_date=max_date,
             last_processed_date=last_loaded_date,
             requested_start_date=start_date,
             requested_end_date=end_date,
         )
-        if window is None:
+
+        processing_jobs = []
+        if has_selection_refresh:
+            selection_end_date = end_date
+            if last_loaded_date is not None and pd.notna(last_loaded_date):
+                selection_end_date = min(
+                    pd.to_datetime(last_loaded_date).normalize(),
+                    requested_end_day,
+                )
+            selection_window = get_incremental_processing_window(
+                min_date=min_date,
+                max_date=max_date,
+                last_processed_date=None,
+                requested_start_date=start_date,
+                requested_end_date=selection_end_date,
+            )
+            if selection_window is not None:
+                processing_jobs.append(("selection backfill", selection_window, missing_geos))
+
+        if normal_window is not None:
+            processing_jobs.append(("new days", normal_window, None))
+
+        if not processing_jobs:
             logger.info("No new diagnosis days to process on or before today")
             refresh_diagnosis_final_imputation(
                 final_store,
                 observed_until=source_observed_until,
                 impute_until=requested_end_day,
+                expected_geo_aliases=expected_aliases,
             )
             return
 
-        start_date, end_exclusive, max_process_day = window
-        logger.info(
-            f"Processing new diagnosis days: {start_date.date()} -> "
-            f"{max_process_day.date()}"
-        )
-
-        # Process by year for memory efficiency
-        year_ranges = get_year_ranges(start_date, max_process_day)
         global_max_loaded = last_loaded_date
+        observed_days = []
 
-        for year, year_start, year_end in year_ranges:
-            logger.info(f"Processing diagnosis year {year}")
-            effective_year_start = max(year_start, start_date)
-            effective_year_end = min(year_end, end_exclusive)
-            if effective_year_end <= effective_year_start:
-                logger.info(f"No diagnosis data on or before today for year {year}")
-                continue
-
-            # Query data efficiently
-            df_chunk = get_diagnosis_data_for_year_optimized(
-                conn=conn,
-                schema=schema,
-                table_name=table_name,
-                date_column=date_column,
-                up_column=up_column,
-                diag_code_column=diag_code_column,
-                year_start=effective_year_start,
-                year_end=effective_year_end,
-                last_loaded_date=None,
-            )
-
-            if df_chunk.empty:
-                logger.info(f"No data for year {year}")
-                continue
-
-            logger.info(f"Year {year}: {len(df_chunk)} rows")
-
-            df_chunk["DIAG_CODE"] = _normalize_diag_codes(df_chunk["DIAG_CODE"])
-            df_chunk = df_chunk.dropna(subset=["DIAG_CODE"])
-            df_chunk = df_chunk[df_chunk["DIAG_CODE"] != ""]
-
-            if df_chunk.empty:
-                continue
-
-            # Prepare data
-            df_chunk["timestamp"] = pd.to_datetime(df_chunk["timestamp"]).dt.floor("D")
-            df_chunk = df_chunk.dropna(subset=["timestamp"])
-            df_chunk = df_chunk[df_chunk["timestamp"] < end_exclusive].copy()
-            if df_chunk.empty:
-                logger.info(f"No diagnosis rows on or before today for year {year}")
-                continue
-
-            df_chunk[up_column] = _normalize_up_codes(df_chunk[up_column])
-            df_chunk["n"] = pd.to_numeric(df_chunk["n"], errors="coerce").fillna(0)
-
-            # Add UP-RS mapping
-            up_rs_map = up_rs[["Codi UP", "RS"]].copy()
-            up_rs_map["Codi UP"] = _normalize_up_codes(up_rs_map["Codi UP"])
-            up_rs_map["RS"] = _normalize_rs_values(up_rs_map["RS"])
-            up_rs_map.columns = [up_column, "RS"]
-            before_merge = len(df_chunk)
-            df_chunk = df_chunk.merge(
-                up_rs_map, on=up_column, how="left"
-            ).fillna("UNKNOWN")
-            unknown_count = (df_chunk["RS"] == "UNKNOWN").sum()
-            if unknown_count > 0:
-                logger.warning(f"Found {unknown_count} rows with unknown UP codes (out of {before_merge} total)")
-                unknown_ups = df_chunk[df_chunk["RS"] == "UNKNOWN"][up_column].unique()
-                logger.warning(f"Unknown UP codes: {list(unknown_ups)[:10]}...")  # Show first 10
-
-            # Build aggregations efficiently
-            general_total = build_daily_total_general_optimized(df_chunk).reset_index()
-            rs_total = build_daily_total_by_group_optimized(
-                _filter_if_selected(df_chunk, "RS", selected_rs),
-                group_col="RS",
-                group_label="RS",
-            )
-            up_total = build_daily_total_by_group_optimized(
-                _filter_if_selected(df_chunk, up_column, selected_up),
-                group_col=up_column,
-                group_label="UP",
-            )
-
-            if selected_codes:
-                code_df = _expand_selected_code_aliases(df_chunk, selected_codes)
-                logger.info(
-                    f"Selected diagnosis-code rows for year {year}: "
-                    f"{len(code_df)} output rows from {len(df_chunk)} aggregated rows "
-                    f"across {code_df['DIAG_CODE'].nunique()} output groups"
-                )
-            else:
-                code_df = df_chunk.iloc[0:0].copy()
-                logger.warning(
-                    "Skipping code-specific diagnosis features because no selected "
-                    "diagnosis-code file was found"
-                )
-
-            code_daily = build_daily_diagnosis_counts_optimized(code_df)
-            rs_daily = build_daily_diagnosis_by_group_optimized(
-                _filter_if_selected(code_df, "RS", selected_rs),
-                group_col="RS",
-            )
-            up_daily = build_daily_diagnosis_by_group_optimized(
-                _filter_if_selected(code_df, up_column, selected_up),
-                group_col=up_column,
-            )
-
-            # Store one already-aggregated daily file per processed year.
-            yearly_daily = _build_diagnosis_wide_final(
-                pd.concat(
-                    [
-                        general_total,
-                        rs_total,
-                        up_total,
-                        code_daily,
-                        rs_daily,
-                        up_daily,
-                    ],
-                    ignore_index=True,
-                    sort=False,
-                )
-            )
-            incremental_mgr.add_data(yearly_daily, timestamp_col="timestamp")
+        for job_label, window, job_missing_geos in processing_jobs:
+            job_start, end_exclusive, max_process_day = window
+            observed_days.append(max_process_day)
             logger.info(
-                f"Saved diagnosis year {year} daily aggregate "
-                f"({len(yearly_daily)} rows)"
+                f"Processing diagnosis {job_label}: {job_start.date()} -> "
+                f"{max_process_day.date()}"
             )
 
-            # Track max date
-            chunk_max = df_chunk["timestamp"].max()
-            if pd.notna(chunk_max):
-                if global_max_loaded is None or chunk_max > global_max_loaded:
-                    global_max_loaded = chunk_max
+            # Process by year for memory efficiency. If a year is too large,
+            # retry the same range in half-year chunks before aggregating final.
+            year_ranges = get_year_ranges(job_start, max_process_day)
+            for year, year_start, year_end in year_ranges:
+                logger.info(f"Processing diagnosis {job_label} year {year}")
+                effective_year_start = max(year_start, job_start)
+                effective_year_end = min(year_end, end_exclusive)
+                if effective_year_end <= effective_year_start:
+                    logger.info(f"No diagnosis data on or before today for year {year}")
+                    continue
 
-            # Clean up
-            del (
-                df_chunk,
-                general_total,
-                rs_total,
-                up_total,
-                code_df,
-                code_daily,
-                rs_daily,
-                up_daily,
-                yearly_daily,
-            )
+                chunk_max = _process_diagnosis_range_with_fallback(
+                    conn=conn,
+                    schema=schema,
+                    table_name=table_name,
+                    date_column=date_column,
+                    up_column=up_column,
+                    diag_code_column=diag_code_column,
+                    range_label=f"{job_label} {year}",
+                    range_start=effective_year_start,
+                    range_end=effective_year_end,
+                    end_exclusive=end_exclusive,
+                    up_rs=up_rs,
+                    incremental_mgr=incremental_mgr,
+                    selected_codes=selected_codes,
+                    selected_rs=selected_rs,
+                    selected_up=selected_up,
+                    missing_geos=job_missing_geos,
+                )
+                if pd.notna(chunk_max):
+                    if global_max_loaded is None or chunk_max > global_max_loaded:
+                        global_max_loaded = chunk_max
 
         # Aggregate to final
         logger.info("Aggregating diagnosis to final output...")
         aggregate_diagnosis_final_optimized(
             incremental_mgr,
             final_store,
-            observed_until=max_process_day,
+            observed_until=max(observed_days) if observed_days else source_observed_until,
             impute_until=requested_end_day,
+            expected_geo_aliases=expected_aliases,
+            partial_column_update=has_selection_refresh,
         )
 
         logger.info("Diagnosis pipeline completed successfully")
