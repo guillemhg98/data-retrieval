@@ -146,9 +146,9 @@ def impute_tail_to_date(
         ]
         past = history[(history.index < impute_day) & (history.index <= observed_day)]
         recent = past[(past.index >= impute_day - pd.Timedelta(days=56))
-                      & (past.index.dayofweek == impute_day.dayofweek)]
-        seasonal_distance = abs((past.index.dayofyear - impute_day.dayofyear + 183) % 366 - 183)
-        seasonal = past[(seasonal_distance <= 28) & (past.index.dayofweek == impute_day.dayofweek)]
+                      & (past.index.day_of_week == impute_day.day_of_week)]
+        seasonal_distance = abs((past.index.day_of_year - impute_day.day_of_year + 183) % 366 - 183)
+        seasonal = past[(seasonal_distance <= 28) & (past.index.day_of_week == impute_day.day_of_week)]
         method = RECENT_WEEKDAY_METHOD
         if len(recent) >= 3:
             values = recent[numeric_cols].mean(skipna=True)

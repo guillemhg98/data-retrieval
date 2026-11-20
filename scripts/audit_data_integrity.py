@@ -72,7 +72,7 @@ def reproduce(root):
 
     # Five years with strong weekly seasonality are averaged by month/day.
     dates = pd.date_range("2019-01-01", "2023-12-31")
-    source = frame(dates, DEMAND__TOTAL=[10 if d.dayofweek >= 5 else 100 for d in dates])
+    source = frame(dates, DEMAND__TOTAL=[10 if d.day_of_week >= 5 else 100 for d in dates])
     imputed = impute_tail_to_date(source, dates.max(), pd.Timestamp("2024-01-14"))
     january = imputed[imputed.timestamp >= "2024-01-01"]
     findings["weekday_pattern_smoothed"] = {
@@ -211,8 +211,8 @@ def inspect_local():
         weekly = {}
         for year in (2025, 2026):
             june = df[df.timestamp.dt.strftime("%Y-%m") == f"{year}-06"]
-            weekdays = june.loc[june.timestamp.dt.dayofweek < 5, total].mean()
-            weekends = june.loc[june.timestamp.dt.dayofweek >= 5, total].mean()
+            weekdays = june.loc[june.timestamp.dt.day_of_week < 5, total].mean()
+            weekends = june.loc[june.timestamp.dt.day_of_week >= 5, total].mean()
             weekly[str(year)] = float(weekdays / weekends)
         summary[domain] = {
             "rows": len(df), "imputed_rows": int(mask.sum()),

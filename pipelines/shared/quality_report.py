@@ -228,7 +228,7 @@ def _render(data, domain, start, end, reasons, output):
         ax.legend(loc="upper left", fontsize=8, ncol=2)
         x = np.arange(7)
         for delta, mask, color, label in [(-.21, observed, colors["observed"], "Observat"), (.21, estimated, colors["estimated"], "Imputat")]:
-            medians = view[total].where(mask).groupby(calendar.dayofweek).median().reindex(range(7))
+            medians = view[total].where(mask).groupby(calendar.day_of_week).median().reindex(range(7))
             weekly.bar(x + delta, medians, .4, color=color, alpha=.85, label=label)
         weekly.set_xticks(x, ["Dl", "Dt", "Dc", "Dj", "Dv", "Ds", "Dg"])
         weekly.set_ylabel("Mediana de visites")

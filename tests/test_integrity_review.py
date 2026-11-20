@@ -16,7 +16,7 @@ def daily(start, end, domain="DEMAND", amount=None):
     dates = pd.date_range(start, end)
     return add_observed_imputation_metadata(pd.DataFrame({
         "timestamp": dates,
-        f"{domain}__TOTAL": amount if amount is not None else [10 if d.dayofweek >= 5 else 1000 for d in dates],
+        f"{domain}__TOTAL": amount if amount is not None else [10 if d.day_of_week >= 5 else 1000 for d in dates],
     }))
 
 

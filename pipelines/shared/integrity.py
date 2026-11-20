@@ -38,7 +38,7 @@ def suspect_days(df, total_col):
         dates = prior_center + pd.Timedelta(days=offset)
         prior[offset] = pd.Series(
             observed.reindex(dates).to_numpy(), index=calendar,
-        ).where(dates.dayofweek == calendar.dayofweek)
+        ).where(dates.day_of_week == calendar.day_of_week)
     prior = pd.DataFrame(prior)
     prior_baseline = prior.median(axis=1).where(prior.count(axis=1) >= 4)
     baseline = pd.concat([weekly_baseline, prior_baseline], axis=1).max(axis=1)
@@ -58,8 +58,8 @@ def suspect_days(df, total_col):
         if len(previous) < 14:
             continue
         def ratio(series):
-            work = series[series.index.dayofweek < 5].median()
-            weekend = series[series.index.dayofweek >= 5].median()
+            work = series[series.index.day_of_week < 5].median()
+            weekend = series[series.index.day_of_week >= 5].median()
             return weekend / work if work > 0 else float("nan")
         if ratio(previous) < 0.35 and ratio(group) > 0.65:
             for day in group.index:
