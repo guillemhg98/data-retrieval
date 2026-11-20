@@ -562,6 +562,8 @@ def run_demand_pipeline_optimized(
     config: Optional[DemandConfig] = None,
     start_date: Optional[str | pd.Timestamp] = None,
     end_date: Optional[str | pd.Timestamp] = None,
+    review_ranges: Optional[list] = None,
+    review_max_days: int = 120,
 ) -> bool:
     """Run optimized demand pipeline with Parquet storage."""
     if config is None:
@@ -578,6 +580,8 @@ def run_demand_pipeline_optimized(
             config,
             start_date=start_date,
             end_date=end_date,
+            review_ranges=review_ranges,
+            review_max_days=review_max_days,
         )
         logger.info("Demand pipeline completed successfully")
         return True
@@ -590,6 +594,8 @@ def run_diagnosis_pipeline_optimized(
     config: Optional[DiagnosisConfig] = None,
     start_date: Optional[str | pd.Timestamp] = None,
     end_date: Optional[str | pd.Timestamp] = None,
+    review_ranges: Optional[list] = None,
+    review_max_days: int = 120,
 ) -> bool:
     """Run optimized diagnosis pipeline with Parquet storage."""
     if config is None:
@@ -608,6 +614,8 @@ def run_diagnosis_pipeline_optimized(
             config,
             start_date=start_date,
             end_date=end_date,
+            review_ranges=review_ranges,
+            review_max_days=review_max_days,
         )
         logger.info("Diagnosis pipeline completed successfully")
         return True
@@ -651,13 +659,15 @@ def join_final_outputs(
             output_file=output_path,
             allow_future=allow_future,
         )
-        joiner.join_and_save(
+        joined_path = joiner.join_and_save(
             demand_prefix="DEMAND",
             diagnosis_prefix="DIAGNOSIS",
-            fill_method="ffill",
+            fill_method=None,
             compression="snappy",
         )
 
+        if joined_path is None:
+            return False
         logger.info(f"Final join completed: {output_path}")
         return True
     except Exception as e:
@@ -908,6 +918,14 @@ Features:
         help="Optional inclusive end date (YYYY-MM-DD). Defaults to today.",
     )
     parser.add_argument(
+        "--review-period", nargs=2, action="append", default=[], metavar=("START", "END"),
+        help="Review an inclusive historical period with grouped SQL counts; repeatable",
+    )
+    parser.add_argument(
+        "--review-max-days", type=int, default=120,
+        help="Maximum existing days checked per run (default: 120); remaining days are deferred",
+    )
+    parser.add_argument(
         "--convert-parquet",
         type=Path,
         help="Convert a final or incremental Parquet file to CSV or Excel",
@@ -993,6 +1011,18 @@ Features:
     try:
         start_date = _parse_cli_date(args.start_date, "--start-date")
         end_date = _parse_cli_date(args.end_date, "--end-date")
+        review_ranges = []
+        for review_start, review_end in args.review_period:
+            review_start = _parse_cli_date(review_start, "--review-period")
+            review_end = _parse_cli_date(review_end, "--review-period")
+            if review_start > review_end:
+                raise ValueError("--review-period start cannot be after end")
+            review_ranges.append((review_start, review_end))
+        if args.review_max_days < 1:
+            raise ValueError("--review-max-days must be positive")
+        if review_ranges and (args.sample or args.offline_impute or args.join_final):
+            raise ValueError("--review-period requires a production demand/diagnosis run")
+
         if start_date is not None and end_date is not None and start_date > end_date:
             raise ValueError("--start-date cannot be after --end-date")
     except ValueError as e:
@@ -1161,6 +1191,8 @@ Features:
             success = run_demand_pipeline_optimized(
                 start_date=start_date,
                 end_date=end_date,
+                review_ranges=review_ranges,
+                review_max_days=args.review_max_days,
             )
             results.append(("Demand Pipeline", success))
 
@@ -1177,10 +1209,12 @@ Features:
             success = run_diagnosis_pipeline_optimized(
                 start_date=start_date,
                 end_date=end_date,
+                review_ranges=review_ranges,
+                review_max_days=args.review_max_days,
             )
             results.append(("Diagnosis Pipeline", success))
 
-    if run_join:
+    if run_join and all(success for _, success in results):
         if args.sample:
             success = join_sample_final_outputs(args.sample_output_dir)
             results.append(("Sample Final Join", success))

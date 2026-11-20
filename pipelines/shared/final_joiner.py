@@ -4,6 +4,9 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple
 import warnings
+import json
+import hashlib
+from uuid import uuid4
 
 from .parquet_storage import drop_future_timestamp_rows
 from .imputation import write_imputation_metadata_files
@@ -45,7 +48,7 @@ class FinalDataJoiner:
         self,
         demand_prefix: str = "DEMAND",
         diagnosis_prefix: str = "DIAGNOSIS",
-        fill_method: str = "ffill",
+        fill_method: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Efficiently join demand and diagnosis data columnwise.
@@ -53,7 +56,7 @@ class FinalDataJoiner:
         Args:
             demand_prefix: Prefix for demand columns
             diagnosis_prefix: Prefix for diagnosis columns
-            fill_method: Method to fill missing values ('ffill', 'bfill', 'interpolate', None)
+            fill_method: Must be None; estimates must carry upstream provenance.
 
         Returns:
             Joined DataFrame
@@ -65,8 +68,7 @@ class FinalDataJoiner:
         diagnosis_df = self._load_parquet_efficient(self.diagnosis_file)
 
         if demand_df.empty or diagnosis_df.empty:
-            logger.error("Could not load demand or diagnosis data")
-            return pd.DataFrame()
+            raise ValueError("Could not load demand or diagnosis data")
 
         logger.info(f"Demand: {len(demand_df)} rows, {len(demand_df.columns)} columns")
         logger.info(
@@ -117,26 +119,15 @@ class FinalDataJoiner:
             on=self.timestamp_col,
             how="outer",
             suffixes=("", "_diag"),
+            validate="one_to_one",
         )
 
         # Sort by timestamp
         merged = merged.sort_values(self.timestamp_col)
 
-        # Handle missing values
-        if fill_method == "ffill":
-            logger.info("Filling missing values with forward fill...")
-            merged = merged.ffill()
-        elif fill_method == "bfill":
-            logger.info("Filling missing values with backward fill...")
-            merged = merged.bfill()
-        elif fill_method == "interpolate":
-            logger.info("Interpolating missing values...")
-            numeric_cols = merged.select_dtypes(include=[float, int]).columns
-            merged[numeric_cols] = merged[numeric_cols].interpolate(method="linear")
-
-        # Fill any remaining nulls with 0 for numeric columns
-        numeric_cols = merged.select_dtypes(include=[float, int]).columns
-        merged[numeric_cols] = merged[numeric_cols].fillna(0)
+        # Keep absent observations absent. Filling here destroys provenance.
+        if fill_method is not None:
+            raise ValueError("Join filling is disabled; use tracked pipeline imputation instead")
         merged = drop_future_timestamp_rows(
             merged,
             self.timestamp_col,
@@ -163,13 +154,22 @@ class FinalDataJoiner:
         """
         logger.info(f"Saving to {self.output_file.name}...")
 
-        df.to_parquet(
-            self.output_file,
-            compression=compression,
-            index=False,
-            row_group_size=100000,
-        )
-
+        version = uuid4().hex
+        parquet_temp = self.output_file.with_name(self.output_file.name + f".{version}.tmp")
+        csv_path = self.output_file.with_suffix(".csv")
+        csv_temp = csv_path.with_name(csv_path.name + f".{version}.tmp")
+        df.to_parquet(parquet_temp, compression=compression, index=False, row_group_size=100000)
+        df.to_csv(csv_temp, index=False, encoding="utf-8-sig")
+        manifest = {
+            "version": version, "rows": len(df),
+            "last_date": str(pd.to_datetime(df[self.timestamp_col]).max()),
+            "files": {
+                self.output_file.name: hashlib.sha256(parquet_temp.read_bytes()).hexdigest(),
+                csv_path.name: hashlib.sha256(csv_temp.read_bytes()).hexdigest(),
+            },
+        }
+        parquet_temp.replace(self.output_file)
+        csv_temp.replace(csv_path)
         file_size = self.output_file.stat().st_size / 1024 / 1024  # MB
         logger.info(
             f"Saved successfully: {len(df)} rows, {len(df.columns)} columns, "
@@ -183,12 +183,17 @@ class FinalDataJoiner:
         logger.info(
             f"Saved imputation metadata: {summary_path.name}, {rows_path.name}"
         )
+        manifest_path = self.output_file.with_name(self.output_file.stem + "_manifest.json")
+        manifest_temp = manifest_path.with_suffix(".json.tmp")
+        manifest_temp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        manifest_temp.replace(manifest_path)
+
 
     def join_and_save(
         self,
         demand_prefix: str = "DEMAND",
         diagnosis_prefix: str = "DIAGNOSIS",
-        fill_method: str = "ffill",
+        fill_method: Optional[str] = None,
         compression: str = "snappy",
     ) -> Path:
         """
@@ -197,7 +202,7 @@ class FinalDataJoiner:
         Args:
             demand_prefix: Prefix for demand columns
             diagnosis_prefix: Prefix for diagnosis columns
-            fill_method: Method to fill missing values
+            fill_method: Must be None; estimates must carry upstream provenance.
             compression: Compression algorithm
 
         Returns:

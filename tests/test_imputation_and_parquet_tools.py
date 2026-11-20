@@ -67,7 +67,8 @@ def test_impute_tail_to_date_fills_missing_calendar_days_inside_observed_range()
 
     imputed_row = result[result["timestamp"] == pd.Timestamp("2024-01-02")].iloc[0]
     assert bool(imputed_row[IMPUTED_COL]) is True
-    assert imputed_row["value"] == 15
+    # Historical gaps must not use observations from after the missing day.
+    assert imputed_row["value"] == 10
 
 
 def test_drop_imputed_rows_removes_estimates_and_metadata_columns():

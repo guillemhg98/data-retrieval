@@ -1,6 +1,7 @@
 """Optimized diagnosis pipeline with Parquet storage and partial incremental files."""
 import hashlib
 import os
+from pipelines.shared.integrity import combine_daily_snapshots
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -287,6 +288,8 @@ def aggregate_diagnosis_final_optimized(
     allow_future_imputation: bool = False,
     expected_geo_aliases: Optional[dict[str, set[str]]] = None,
     partial_column_update: bool = False,
+    replace_dates: Optional[list] = None,
+    empty_dates: Optional[list] = None,
 ) -> pd.DataFrame:
     """
     Efficiently aggregate incremental diagnosis data to final output.
@@ -301,17 +304,19 @@ def aggregate_diagnosis_final_optimized(
         Aggregated DataFrame
     """
     parquet_files = incremental_manager.iter_incremental_files()
-    if not parquet_files:
-        logger.warning("No diagnosis incremental data to aggregate")
-        return pd.DataFrame()
+    if not parquet_files and not replace_dates:
+        return refresh_diagnosis_final_imputation(
+            final_store, observed_until, impute_until, timestamp_col=timestamp_col,
+            allow_future_imputation=allow_future_imputation,
+            expected_geo_aliases=expected_geo_aliases,
+        )
 
     parts = []
     for parquet_file in parquet_files:
         try:
             df = pd.read_parquet(parquet_file)
         except Exception as e:
-            logger.error(f"Error reading {parquet_file}: {e}")
-            continue
+            raise RuntimeError(f"Cannot publish with unreadable chunk: {parquet_file}") from e
 
         if df.empty:
             continue
@@ -327,16 +332,19 @@ def aggregate_diagnosis_final_optimized(
         if not df.empty:
             parts.append(_build_diagnosis_wide_final(df, timestamp_col))
 
-    if not parts:
+    if not parts and not replace_dates:
         logger.warning("No diagnosis incremental data to aggregate")
         return pd.DataFrame()
 
-    df = _combine_diagnosis_wide_parts(parts, timestamp_col)
+    df = _combine_diagnosis_wide_parts(parts, timestamp_col) if parts else pd.DataFrame(columns=[timestamp_col])
+    if empty_dates:
+        df = df[~df[timestamp_col].isin(pd.to_datetime(empty_dates))]
     df = _merge_with_existing_diagnosis_final(
         df,
         final_store,
         timestamp_col,
         replace_overlapping_days=not partial_column_update,
+        replace_dates=replace_dates,
     )
     df = _drop_unselected_geo_columns(df, expected_geo_aliases)
 
@@ -398,14 +406,7 @@ def _combine_diagnosis_wide_parts(
     timestamp_col: str,
 ) -> pd.DataFrame:
     """Combine per-file diagnosis final frames by summing matching timestamps."""
-    indexed = [frame.set_index(timestamp_col) for frame in frames if not frame.empty]
-    if not indexed:
-        return pd.DataFrame()
-
-    combined = pd.concat(indexed, axis=0).fillna(0)
-    combined = combined.groupby(level=0, observed=True).sum(min_count=1).fillna(0)
-    combined.index.name = timestamp_col
-    return combined.sort_index().reset_index()
+    return combine_daily_snapshots(frames, timestamp_col)
 
 
 def _build_diagnosis_wide_final(
@@ -582,6 +583,7 @@ def _merge_with_existing_diagnosis_final(
     final_store,
     timestamp_col: str = "timestamp",
     replace_overlapping_days: bool = True,
+    replace_dates: Optional[list] = None,
 ) -> pd.DataFrame:
     """Merge new diagnosis final rows with the existing final parquet."""
     existing_df = final_store.load_final()
@@ -597,6 +599,8 @@ def _merge_with_existing_diagnosis_final(
         return new_df
 
     existing_idx = existing_df.set_index(timestamp_col)
+    if replace_dates:
+        existing_idx = existing_idx[~existing_idx.index.isin(pd.to_datetime(replace_dates))]
     new_idx = new_df.set_index(timestamp_col)
 
     if replace_overlapping_days:
@@ -622,6 +626,13 @@ def _drop_unselected_geo_columns(
     """Drop RS/UP columns whose geo aliases are no longer selected."""
     if df.empty or not expected_geo_aliases:
         return df
+
+    df = df.copy()
+    for level, aliases in expected_geo_aliases.items():
+        for alias in aliases:
+            column = f"DIAGNOSIS__TOTAL__{level}__{alias}"
+            if column not in df:
+                df[column] = 0
 
     drop_cols = []
     for col in df.columns:

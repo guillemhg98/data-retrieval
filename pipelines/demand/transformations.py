@@ -20,6 +20,7 @@ def prepare_visits_chunk(df: pd.DataFrame, up_rs: pd.DataFrame) -> pd.DataFrame:
         left_on="UP",
         right_on="Codi UP",
         how="left",
+        validate="many_to_one",
     ).drop(columns=["Codi UP"])
 
     out["RS"] = (

@@ -19,12 +19,15 @@ IMPUTATION_COLUMNS = {
 }
 
 SAME_MONTH_DAY_METHOD = "same_month_day_mean"
+RECENT_WEEKDAY_METHOD = "recent_same_weekday_mean"
 
 
 def is_imputed_series(values: pd.Series) -> pd.Series:
     """Return a boolean mask for rows marked as imputed."""
     if values.dtype == bool:
         return values.fillna(False)
+    if pd.api.types.is_numeric_dtype(values):
+        return values.eq(1).fillna(False)
 
     normalized = values.astype("string").str.strip().str.lower()
     return normalized.isin({"true", "1", "yes", "y"})
@@ -38,7 +41,7 @@ def drop_imputed_rows(
     if df.empty or IMPUTED_COL not in df.columns:
         return df.copy()
 
-    out = df.copy()
+    out = df.copy().drop(columns=["__quality_status"], errors="ignore")
     out = out[~is_imputed_series(out[IMPUTED_COL])].copy()
     return out.drop(columns=list(IMPUTATION_COLUMNS), errors="ignore")
 
@@ -66,9 +69,10 @@ def impute_tail_to_date(
     Complete a final daily dataframe through target_until with tracked estimates.
 
     Real rows are kept as observed. Any missing calendar day from the first
-    observed day through target_until is imputed. Values are column-wise averages
-    from the same calendar month/day in previous observed years. If a column has
-    no same-month/day history, the column's observed mean is used as a fallback.
+    observed day through target_until is imputed. Values use the same weekday
+    in the previous eight weeks, then seasonal same-weekday history when at
+    least three observations exist, then same-month/day or the past mean.
+    Future observations are never used to fill a historical gap.
     """
     if df.empty:
         return add_observed_imputation_metadata(df)
@@ -96,14 +100,15 @@ def impute_tail_to_date(
         observed_day = pd.to_datetime(observed_until).normalize()
 
     observed_day = min(observed_day, target_day, real[timestamp_col].max())
-    real = real[real[timestamp_col] <= observed_day].copy()
+    # A bounded refresh must preserve observations outside the requested range.
+    real = real.copy()
     if real.empty:
         return add_observed_imputation_metadata(real)
 
     numeric_cols = [
         col
         for col in real.columns
-        if col != timestamp_col and col not in IMPUTATION_COLUMNS
+        if col != timestamp_col and col not in IMPUTATION_COLUMNS and not col.startswith("__")
     ]
     for col in numeric_cols:
         real[col] = pd.to_numeric(real[col], errors="coerce")
@@ -123,7 +128,11 @@ def impute_tail_to_date(
         return real.sort_values(timestamp_col).reset_index(drop=True)
 
     history = real.set_index(timestamp_col)
-    fallback_means = history[numeric_cols].mean(skipna=True)
+    total = next((c for c in ("DEMAND__TOTAL", "DIAGNOSIS__TOTAL") if c in real), None)
+    if total:
+        from .integrity import suspect_days
+        suspects = suspect_days(real.rename(columns={timestamp_col: "timestamp"}), total)
+        history = history.loc[~history.index.isin(suspects)]
     imputed_rows = []
     created_at = pd.Timestamp.now().isoformat()
     source_last_date = observed_day.date().isoformat()
@@ -133,17 +142,30 @@ def impute_tail_to_date(
             (history.index.month == impute_day.month)
             & (history.index.day == impute_day.day)
             & (history.index < impute_day)
+            & (history.index <= observed_day)
         ]
-        if same_day_history.empty:
-            values = fallback_means.copy()
-        else:
+        past = history[(history.index < impute_day) & (history.index <= observed_day)]
+        recent = past[(past.index >= impute_day - pd.Timedelta(days=56))
+                      & (past.index.dayofweek == impute_day.dayofweek)]
+        seasonal_distance = abs((past.index.dayofyear - impute_day.dayofyear + 183) % 366 - 183)
+        seasonal = past[(seasonal_distance <= 28) & (past.index.dayofweek == impute_day.dayofweek)]
+        method = RECENT_WEEKDAY_METHOD
+        if len(recent) >= 3:
+            values = recent[numeric_cols].mean(skipna=True)
+        elif len(seasonal) >= 3:
+            values = seasonal[numeric_cols].mean(skipna=True)
+            method = "seasonal_same_weekday_mean"
+        elif not same_day_history.empty:
             values = same_day_history[numeric_cols].mean(skipna=True)
-            values = values.fillna(fallback_means)
-
-        row = values.fillna(0).to_dict()
+            method = SAME_MONTH_DAY_METHOD
+        else:
+            values = past[numeric_cols].mean(skipna=True)
+            method = "past_observed_mean"
+        values = values.fillna(past[numeric_cols].mean(skipna=True))
+        row = values.to_dict()
         row[timestamp_col] = impute_day
         row[IMPUTED_COL] = True
-        row[IMPUTATION_METHOD_COL] = SAME_MONTH_DAY_METHOD
+        row[IMPUTATION_METHOD_COL] = method
         row[IMPUTATION_SOURCE_LAST_DATE_COL] = source_last_date
         row[IMPUTATION_CREATED_AT_COL] = created_at
         imputed_rows.append(row)
@@ -208,7 +230,8 @@ def build_imputation_metadata(
                 "dataset": label,
                 "imputed_column": imputed_col,
                 "num_imputed_rows": int(imputed_mask.sum()),
-                "num_observed_rows": int((~imputed_mask).sum()),
+                "num_observed_rows": int((~imputed_mask & df[imputed_col].notna()).sum()),
+                "num_missing_status_rows": int(df[imputed_col].isna().sum()),
                 "first_imputed_date": imputed_dates[0] if imputed_dates else None,
                 "last_imputed_date": imputed_dates[-1] if imputed_dates else None,
                 "imputed_dates": imputed_dates,

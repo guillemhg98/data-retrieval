@@ -1,4 +1,5 @@
 ﻿"""Optimized demand pipeline main runner with Parquet storage."""
+from pipelines.shared.integrity import IntegrityReview, input_signature
 import pandas as pd
 import logging
 import re
@@ -215,7 +216,7 @@ def _missing_geo_sources(
         missing_level = {
             source: alias
             for source, alias in selected.items()
-            if not any(f"__{geo_level}__{alias}" in col for col in existing_cols)
+            if f"DEMAND__TOTAL__{geo_level}__{alias}" not in existing_cols
         }
         if missing_level:
             missing[geo_level] = missing_level
@@ -410,6 +411,8 @@ def run_incremental_pipeline_optimized(
     retention_days: Optional[int] = None,
     start_date: Optional[str | pd.Timestamp] = None,
     end_date: Optional[str | pd.Timestamp] = None,
+    review_ranges: Optional[list] = None,
+    review_max_days: int = 120,
 ) -> None:
     """
     Run optimized incremental demand pipeline with Parquet storage.
@@ -447,13 +450,10 @@ def run_incremental_pipeline_optimized(
     # Get last processed day from metadata, with final parquet as a fallback.
     metadata_exists = incremental_mgr.metadata_file.exists()
     metadata_last_date = incremental_mgr.get_last_timestamp()
-    final_last_date = final_store.get_last_contiguous_timestamp()
-    if metadata_exists and metadata_last_date is not None and final_last_date is not None:
-        last_loaded_date = min(metadata_last_date, final_last_date)
-    elif metadata_exists:
-        last_loaded_date = metadata_last_date
-    else:
-        last_loaded_date = final_last_date
+    final_last_date = final_store.get_last_timestamp()
+    # Only the published final is a durable checkpoint. Pending chunk metadata
+    # may be ahead after a crash, or behind after a historical repair.
+    last_loaded_date = final_last_date
     logger.info(
         f"Last processed day: {last_loaded_date} "
         f"(metadata={metadata_last_date}, final_contiguous={final_last_date}, "
@@ -474,8 +474,7 @@ def run_incremental_pipeline_optimized(
         )
 
         if min_date is None or max_date is None:
-            logger.info("No valid data in source table")
-            return
+            raise ValueError("Source table has no valid data; keeping the previous final without publishing")
 
         today_day = pd.Timestamp.today().normalize()
         requested_end_day = (
@@ -504,6 +503,19 @@ def run_incremental_pipeline_optimized(
             requested_end_date=end_date,
         )
 
+        signature = input_signature(
+            [db_server, db_database, schema, table_name, date_column], up_rs, [selected_rs, selected_up],
+        )
+        review = IntegrityReview(final_store, "DEMAND__TOTAL", max_days=review_max_days, input_signature=signature)
+        review_windows = review.plan(
+            conn, schema, table_name, date_column,
+            "UP", min_date, requested_end_day,
+            observed_source_end=source_observed_until,
+            new_start=normal_window[0] if normal_window else None,
+            review_ranges=review_ranges,
+            diagnosis_column=None,
+        )
+        final_store.pending_review_dates = review.pending_rebuild - set(review.changed_dates)
         processing_jobs = []
         if has_selection_refresh:
             selection_end_date = end_date
@@ -522,6 +534,9 @@ def run_incremental_pipeline_optimized(
             if selection_window is not None:
                 processing_jobs.append(("selection backfill", selection_window, missing_geos))
 
+        for review_window in review_windows:
+            processing_jobs.append(("integrity review", review_window, None))
+
         if normal_window is not None:
             processing_jobs.append(("new days", normal_window, None))
 
@@ -533,6 +548,7 @@ def run_incremental_pipeline_optimized(
                 impute_until=requested_end_day,
                 expected_geo_aliases=expected_aliases,
             )
+            review.commit()
             return
 
         global_max_loaded = last_loaded_date
@@ -576,17 +592,22 @@ def run_incremental_pipeline_optimized(
                     if global_max_loaded is None or chunk_max > global_max_loaded:
                         global_max_loaded = chunk_max
 
+        review.validate_chunks(incremental_mgr)
+
         # Aggregate to final
         logger.info("Aggregating to final output...")
         aggregate_final_optimized(
             incremental_mgr,
             final_store,
-            observed_until=max(observed_days) if observed_days else source_observed_until,
+            observed_until=source_observed_until,
             impute_until=requested_end_day,
             expected_geo_aliases=expected_aliases,
             partial_column_update=has_selection_refresh,
+            replace_dates=review.changed_dates,
+            empty_dates=[d for d in review.changed_dates if review.expected_counts[d] == 0],
         )
 
+        review.commit()
         logger.info("Demand pipeline completed successfully")
 
     finally:
@@ -597,6 +618,8 @@ def run_demand_pipeline_main_optimized(
     config,
     start_date: Optional[str | pd.Timestamp] = None,
     end_date: Optional[str | pd.Timestamp] = None,
+    review_ranges: Optional[list] = None,
+    review_max_days: int = 120,
 ) -> None:
     """Main entry point for optimized demand pipeline."""
     run_incremental_pipeline_optimized(
@@ -615,4 +638,6 @@ def run_demand_pipeline_main_optimized(
         retention_days=None,
         start_date=start_date,
         end_date=end_date,
+        review_ranges=review_ranges,
+        review_max_days=review_max_days,
     )

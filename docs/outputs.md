@@ -30,9 +30,10 @@ Columnes de control:
 | Columna | Descripcio |
 | --- | --- |
 | `__is_imputed` | `True` si la fila es estimada. |
-| `__imputation_method` | Metode aplicat, actualment `same_month_day_mean`. |
+| `__imputation_method` | `recent_same_weekday_mean`, `seasonal_same_weekday_mean`, `same_month_day_mean` o `past_observed_mean`, segons l'historial disponible. |
 | `__imputation_source_last_date` | Ultim dia real disponible quan es va estimar. |
 | `__imputation_created_at` | Moment de creacio de la imputacio. |
+| `__quality_status` | `imputed`, `suspect`, `pending_rebuild` o `observed_unverified`. Una fila observada no implica carrega completa. |
 
 Cada final tambe escriu sidecars:
 
@@ -40,6 +41,11 @@ Cada final tambe escriu sidecars:
 | --- | --- |
 | `*_imputation_metadata.json` | Resum global i dates imputades. |
 | `*_imputed_rows.csv` | Una fila per data imputada. |
+| `*_integrity.json` | Dies comprovats, recomptes de font i cobertura, sospites, dies diferits i canvis de configuracio pendents. Nomes produccio amb SQL. |
+
+La imputacio prioritza el mateix dia de setmana de les vuit setmanes anteriors, despres dies de la mateixa epoca i dia de setmana d'anys anteriors. Exclou dates sospitoses dels totals i no utilitza observacions posteriors per omplir buits historics. No modela explicitament el calendari de festius; les estimacions es mantenen diferenciades de les observacions.
+
+El join conserva els valors absents i les seves metadades absents: no aplica `ffill`, interpolacio ni zeros per ocultar-los. El consumidor ha de tractar les columnes de control com a metadades. Cada join genera el Parquet i el CSV a partir del mateix dataframe, i publica al final `demand_diagnosis_joined_manifest.json` amb un identificador de versio, recompte de files i SHA-256 dels dos fitxers. El consumidor pot verificar aquest manifest per detectar una publicacio interrompuda entre els reemplaçaments; els dos fitxers no es poden substituir atomicament com a parella.
 
 Quan la base de dades publica dades reals mes tard, les files imputades no compten com a processades i son substituides pels valors reals.
 

@@ -207,7 +207,7 @@ def join_sample_outputs(output_dir: str | Path) -> Path:
     return joiner.join_and_save(
         demand_prefix="DEMAND",
         diagnosis_prefix="DIAGNOSIS",
-        fill_method="ffill",
+        fill_method=None,
         compression="snappy",
     )
 

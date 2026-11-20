@@ -266,22 +266,33 @@ class ParquetFinalStore:
             df = df.reset_index()
 
         df = drop_future_timestamp_rows(df, index_col, allow_future=allow_future)
-        if df.empty:
-            logger.warning("No final rows on or before today - skipping save")
-            return
+        # Row existence does not certify completeness.
+        from .integrity import suspect_days
+        total_cols = [c for c in ("DEMAND__TOTAL", "DIAGNOSIS__TOTAL") if c in df]
+        if total_cols:
+            reasons = suspect_days(df, total_cols[0])
+            estimated = is_imputed_series(df[IMPUTED_COL]) if IMPUTED_COL in df else pd.Series(False, index=df.index)
+            df["__quality_status"] = [
+                "imputed" if estimated.iloc[i]
+                else "pending_rebuild" if pd.Timestamp(day).normalize() in getattr(self, "pending_review_dates", set())
+                else "suspect" if pd.Timestamp(day).normalize() in reasons else "observed_unverified"
+                for i, day in enumerate(df[index_col])
+            ]
 
         # Optimize dtypes before saving
         df = self._optimize_dtypes(df)
 
         # Save with efficient column-wise storage
+        temporary = self.output_file.with_name(self.output_file.name + f".{uuid4().hex}.tmp")
         df.to_parquet(
-            self.output_file,
+            temporary,
             compression=compression,
             index=False,
             # Use row_group_size for better memory efficiency
             row_group_size=100000,
         )
 
+        temporary.replace(self.output_file)
         logger.info(
             f"Saved final output: {self.output_file.name} "
             f"({len(df)} rows, {len(df.columns)} columns)"
@@ -306,8 +317,7 @@ class ParquetFinalStore:
             logger.info(f"Loaded final file: {len(df)} rows")
             return df
         except Exception as e:
-            logger.error(f"Error loading final file: {e}")
-            return pd.DataFrame()
+            raise RuntimeError(f"Cannot read published final: {self.output_file}") from e
 
     def get_last_timestamp(self, timestamp_col: str = "timestamp") -> Optional[pd.Timestamp]:
         """Get the latest non-imputed timestamp stored in the final parquet file."""
