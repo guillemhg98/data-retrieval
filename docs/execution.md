@@ -165,6 +165,50 @@ python run_pipeline.py --sample --all --sample-input-dir data/synthetic/input --
 
 ## Utilitats Parquet
 
+### Comprovacio local amb informe i PNG
+
+Des de PowerShell, a l'arrel del repositori, actualitza la branca i instal·la les dependencies del visor:
+
+```powershell
+git switch incremental-selection-refresh
+git pull --ff-only
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+La comprovacio local **no consulta SQL ni modifica els finals**. Genera l'informe abans de recuperar dades:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check_data_quality.py --start-date 2026-07-01 --output-dir data/quality_before
+```
+
+Despres, amb l'ODBC Driver 18 i l'autenticacio de SQL configurats, executa la revisio del periode i actualitza els dies nous. Atura't si el pipeline retorna un error:
+
+```powershell
+.\.venv\Scripts\python.exe run_pipeline.py --all --review-period 2026-07-01 2026-09-26 --review-max-days 120
+if ($LASTEXITCODE -ne 0) { throw "El pipeline ha fallat; revisa el log abans de continuar" }
+.\.venv\Scripts\python.exe scripts/check_data_quality.py --start-date 2026-07-01 --output-dir data/quality_after
+Invoke-Item .\data\quality_after\demand_quality.png
+Invoke-Item .\data\quality_after\diagnosis_quality.png
+Get-Content .\data\quality_after\summary.txt
+```
+
+Si nomes vols generar el visor del tram concret, afegeix `--end-date 2026-09-26`. Sense dates, el visor mostra els ultims 365 dies emmagatzemats. Per inspeccionar un ZIP, extreu-lo en una carpeta separada i passa `--data-root ruta/a/la/carpeta/data`; no cal substituir les dades de produccio.
+
+Cada informe conte:
+
+- `demand_quality.png` i `diagnosis_quality.png`: observacions blaves, imputacions taronges, sospites amb creus vermelles i referencia observada de fa 52 setmanes. El segon panell mostra les medianes per dia de setmana per detectar aplanaments.
+- `summary.txt` i `summary.json`: dates, qualitat numerica, comprovacions del join, discrepàncies entre CSV i Parquet i verificacio del manifest SHA-256 quan existeix.
+- `flagged_days.csv`: dates assenyalades i motiu. Les estructures numeriques es comproven sobre tot el fitxer; les dates del comandament limiten els grafics i la llista de sospites.
+
+Interpretacio del resultat:
+
+- `OK`: les comprovacions locals passen i no s'han trobat avisos al periode mostrat. No demostra que SQL sigui complet ni valida el model predictiu.
+- `REVIEW`: hi ha imputacions, dies sospitosos, procedencia desconeguda o revisions pendents. Un festiu pot quedar assenyalat legitimament. Comprova el CSV de dates i el registre `*_integrity.json`.
+- `ERROR`: falta un fitxer, hi ha dates duplicades/invalides, valors negatius/no finits, totals incoherents, o el CSV/join/manifest no coincideixen. Cal resoldre-ho abans d'utilitzar la sortida.
+
+Codis de sortida del visor: `0` sense errors estructurals (pot haver-hi `REVIEW`), `2` amb `ERROR`. Amb `--strict`, un `REVIEW` retorna `1`. Per tant, no et basïs nomes en el codi zero: llegeix el resultat del resum. No s'han de convertir les sospites en imputacions per aconseguir un informe verd.
+
 Convertir Parquet a CSV:
 
 ```bash

@@ -46,6 +46,20 @@ python run_pipeline.py --check-imputation data/sample/output/finals/demand_diagn
 python -m pytest -q
 ```
 
+Comprovacio local amb informe de qualitat i grafics PNG, sense consultar SQL:
+
+```powershell
+python scripts/check_data_quality.py --start-date 2026-07-01 --output-dir data/quality_report
+```
+
+Per revisar aquest periode contra la font amb consultes agrupades i un limit de dies:
+
+```powershell
+python run_pipeline.py --all --review-period 2026-07-01 2026-09-26 --review-max-days 120
+```
+
+Consulta [les instruccions del visor](docs/execution.md#comprovacio-local-amb-informe-i-png) per interpretar els resultats i comparar abans/despres.
+
 Per executar contra Synapse:
 
 ```powershell
